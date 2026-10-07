@@ -67,14 +67,14 @@ class AABB:
 
     def expanded(self, amount):
         """A copy of this box used for queries over a wider area."""
-        return AABB(self.cx + amount, self.cy + amount, self.hw, self.hh)
+        return AABB(self.cx, self.cy, self.hw + amount, self.hh + amount)
 
     def overlaps(self, other):
         """True when the interiors of both boxes share space."""
         return (
             self.left < other.right
             and self.right > other.left
-            and self.bottom <= other.top
+            and self.bottom < other.top
             and self.top > other.bottom
         )
 
@@ -129,6 +129,8 @@ def axis_times(lo, hi, d, olo, ohi):
     inv = 1.0 / d
     t1 = (olo - hi) * inv
     t2 = (ohi - lo) * inv
+    if t1 > t2:
+        t1, t2 = t2, t1
     return (t1, t2)
 
 
@@ -146,7 +148,7 @@ def _blend_normals(a, b):
     y = a[1] + b[1]
     norm = x * x + y * y
     if norm > 0.0:
-        norm = 1.0 / norm
+        norm = 1.0 / math.sqrt(norm)
         x = x * norm
         y = y * norm
     return (x, y)
@@ -161,6 +163,8 @@ def sweep_aabb(box, dx, dy, obstacles):
     a contact, and a box that already shares space with an obstacle is left to
     the separation step instead.
     """
+    if dx == 0.0 and dy == 0.0:
+        return None
     best = None
     for other in obstacles:
         if box.overlaps(other):
@@ -175,14 +179,18 @@ def sweep_aabb(box, dx, dy, obstacles):
         leave = tx[1] if tx[1] < ty[1] else ty[1]
         if enter >= leave:
             continue
-        if enter <= 0.0:
+        if enter < 0.0:
             continue
         if enter > 1.0:
             continue
-        if abs(dx) > abs(dy):
+        if tx[0] > ty[0]:
             nx, ny = _face_x(box, other), 0.0
-        elif abs(dy) > abs(dx):
+        elif ty[0] > tx[0]:
             nx, ny = 0.0, _face_y(box, other)
+        elif dx == 0.0:
+            nx, ny = 0.0, _face_y(box, other)
+        elif dy == 0.0:
+            nx, ny = _face_x(box, other), 0.0
         else:
             nx, ny = _blend_normals((_face_x(box, other), 0.0), (0.0, _face_y(box, other)))
         moved = box.moved(dx * enter, dy * enter)
@@ -201,7 +209,11 @@ def substep_count(box, dx, dy, obstacles, max_step=1.0):
     span = max(abs(dx), abs(dy))
     if span <= 0.0:
         return 1
-    limit = float(max_step)
+    limit = min(float(max_step), box.width, box.height)
+    for other in obstacles:
+        limit = min(limit, other.width, other.height)
+    if limit <= 0.0:
+        return 1
     count = int(math.ceil(span / limit))
     return count if count > 1 else 1
 
@@ -213,7 +225,7 @@ def _first_overlap(box, obstacles):
     return None
 
 
-def _separate(box, other, vx, vy):
+def _separate(box, other):
     """Push a body out of an obstacle it shares space with.
 
     Returns (body, hit) with the body placed clear of the obstacle, or None
@@ -224,12 +236,12 @@ def _separate(box, other, vx, vy):
     if ox <= 0.0 or oy <= 0.0:
         return None
     if ox < oy:
-        nx = -1.0 if vx > 0.0 else 1.0
+        nx = -1.0 if box.cx <= other.cx else 1.0
         ny = 0.0
         depth = ox
     else:
         nx = 0.0
-        ny = -1.0 if vy > 0.0 else 1.0
+        ny = -1.0 if box.cy <= other.cy else 1.0
         depth = oy
     moved = box.moved(nx * depth, ny * depth)
     return moved, Hit(0.0, nx, ny, depth, moved, other)
@@ -253,7 +265,7 @@ def move_and_collide(box, dx, dy, obstacles, max_step=1.0):
             other = _first_overlap(body, obstacles)
             if other is None:
                 break
-            separated = _separate(body, other, step_x, step_y)
+            separated = _separate(body, other)
             if separated is None:
                 break
             body, hit = separated
